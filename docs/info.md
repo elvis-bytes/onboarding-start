@@ -8,13 +8,12 @@ You can also include images in this folder and reference them in the markdown. E
 -->
 
 ## How it works
-
-Explain how your project works
+This project implements an SPI-controlled register block that configures a PWM peripheral.
 
 ## How to test
 
-Explain how to use your project
+I will be developing this as I progress
 
 ## External hardware
 
-List external hardware used in your project (e.g. PMOD, LED display, etc), if any
+Hardware I used in This project (e.g. PMOD, LED display, etc)...
