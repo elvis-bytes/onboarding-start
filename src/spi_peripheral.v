@@ -67,4 +67,15 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
+//temporal defined reset values so outputs aren't undriven
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        en_reg_out_7_0   <= 8'h00;
+        en_reg_out_15_8  <= 8'h00;
+        en_reg_pwm_7_0   <= 8'h00;
+        en_reg_pwm_15_8  <= 8'h00;
+        pwm_duty_cycle   <= 8'h00;
+    end
+end
+
 endmodule
