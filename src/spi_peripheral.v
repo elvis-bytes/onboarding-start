@@ -55,7 +55,7 @@ wire sclk_rise = (sclk_sync2 == 1'b1) && (sclk_prev == 1'b0);
 wire ncs_fall = (ncs_sync2 == 1'b0) && (ncs_prev == 1'b1);
 wire ncs_rise = (ncs_sync2 == 1'b1) && (ncs_prev == 1'b0);
 
-
+// Active flag to indicate if SPI transaction is ongoing
 reg active;
 
 always @(posedge clk or negedge rst_n) begin
@@ -67,7 +67,44 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
-//temporal defined reset values so outputs aren't undriven
+
+// Transaction Logic - Bit counter and shift register
+reg [15:0] shift_reg;
+reg [4:0] bit_count; // 0-16 bits - to represent num 16
+reg got_16;
+
+// Capture bits
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        shift_reg <= 16'h0000;
+        bit_count <= 5'd0;
+        got_16    <= 1'b0;
+    end else begin
+        // Start of transaction: clear capture state
+        if (ncs_fall) begin
+            shift_reg <= 16'h0000;
+            bit_count <= 5'd0;
+            got_16    <= 1'b0;
+        end
+
+        // Capture bits on SCLK rising edge while active/selected
+        if (active && sclk_rise && !got_16) begin    
+            // First received bit ends up in MSB
+            shift_reg <= {shift_reg[14:0], copi_sync2};
+            bit_count <= bit_count + 5'd1;
+
+            if (bit_count == 5'd15) begin
+                got_16 <= 1'b1;
+            end
+        end
+    end
+end
+
+// Process/Decode received data
+wire rw = shift_reg[15];          // Read/Write bit
+wire [6:0] addr = shift_reg[14:8]; // 7-bit address
+wire [7:0] data = shift_reg[7:0];   // 8-bit data
+
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         en_reg_out_7_0   <= 8'h00;
@@ -75,6 +112,20 @@ always @(posedge clk or negedge rst_n) begin
         en_reg_pwm_7_0   <= 8'h00;
         en_reg_pwm_15_8  <= 8'h00;
         pwm_duty_cycle   <= 8'h00;
+    end else begin
+        // End of transaction: Commit, but only valid data
+        if (ncs_rise && got_16 && (rw == 1'b1)) begin
+            case (addr)
+                7'h00: en_reg_out_7_0   <= data;
+                7'h01: en_reg_out_15_8  <= data;
+                7'h02: en_reg_pwm_7_0   <= data;
+                7'h03: en_reg_pwm_15_8  <= data;
+                7'h04: pwm_duty_cycle   <= data;
+                default: begin
+                    // invalid address: ignore
+                end
+            endcase
+        end
     end
 end
 
