@@ -289,3 +289,20 @@ async def test_pwm_duty(dut):
     assert 24.0 <= duty_cycle <= 26.0, f"PWM duty cycle {duty_cycle}% out of spec range for 0x40"
 
     dut._log.info("PWM Duty Cycle test completed successfully")
+
+@cocotb.test()
+async def test_pwm_enable_restriction(dut):
+    dut._log.info("Start PWM Enable Restriction test")
+    await reset_dut(dut)
+
+    pwm_sig = dut.uo_out[0]
+
+    # PWM enabled but output disabled => output should stay low
+    await spi_write(dut, 0x00, 0x00)   # disable output bit0
+    await spi_write(dut, 0x02, 0x01)   # enable PWM on bit0
+    await spi_write(dut, 0x04, 0x80)   # set duty cycle
+
+    # Sample the output for a while to ensure it stays low
+    await assert_stays_constant(dut.uo_out[0], expected=0, cycles=5000, dut=dut)
+
+    dut._log.info("PWM Enable Restriction test completed successfully")
