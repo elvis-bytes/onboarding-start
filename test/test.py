@@ -18,6 +18,26 @@ async def await_half_sclk(dut):
             break
     return
 
+async def wait_rise_on_bit(dut, vec, bit_idx, timeout_cycles=100_000):
+    prev = (int(vec.value) >> bit_idx) & 1
+    for _ in range(timeout_cycles):
+        await ClockCycles(dut.clk, 1)
+        cur = (int(vec.value) >> bit_idx) & 1
+        if prev == 0 and cur == 1:
+            return
+        prev = cur
+    raise AssertionError(f"Timeout waiting for rising edge on bit {bit_idx}")
+
+async def wait_fall_on_bit(dut, vec, bit_idx, timeout_cycles=100_000):
+    prev = (int(vec.value) >> bit_idx) & 1
+    for _ in range(timeout_cycles):
+        await ClockCycles(dut.clk, 1)
+        cur = (int(vec.value) >> bit_idx) & 1
+        if prev == 1 and cur == 0:
+            return
+        prev = cur
+    raise AssertionError(f"Timeout waiting for falling edge on bit {bit_idx}")
+
 def ui_in_logicarray(ncs, bit, sclk):
     """Setup the ui_in value as a LogicArray."""
     return LogicArray(f"00000{ncs}{bit}{sclk}")
@@ -109,31 +129,31 @@ async def configure_pwm_pin0(dut, duty):
     await spi_write(dut, 0x02, 0x01)   # enable PWM on bit0
     await spi_write(dut, 0x04, duty)   # duty cycle
 
-async def measure_pwm_period_ns(sig, max_wait_ns=2_000_000):
+async def measure_pwm_period_ns(dut, vec, bit_idx, timeout_cycles=100_000):
     """
     Measure period as time between two rising edges.
     Returns period in ns (float).
     """
-    await with_timeout(RisingEdge(sig), max_wait_ns, 'ns')
+    await wait_rise_on_bit(dut, vec, bit_idx, timeout_cycles)
     t1 = cocotb.utils.get_sim_time(units="ns")
-    await with_timeout(RisingEdge(sig), max_wait_ns, 'ns')
+    await wait_rise_on_bit(dut, vec, bit_idx, timeout_cycles)
     t2 = cocotb.utils.get_sim_time(units="ns")
     return float(t2 - t1)
 
-async def measure_pwm_high_and_period_ns(sig, max_wait_ns=2_000_000):
+async def measure_pwm_high_and_period_ns(dut, vec, bit_idx, timeout_cycles=100_000):
     """
     Measure high time and period:
       rising -> falling = high
       rising -> next rising = period
     Returns (high_ns, period_ns).
     """
-    await with_timeout(RisingEdge(sig), max_wait_ns, 'ns')
+    await wait_rise_on_bit(dut, vec, bit_idx, timeout_cycles)
     t_r1 = cocotb.utils.get_sim_time(units="ns")
 
-    await with_timeout(FallingEdge(sig), max_wait_ns, 'ns')
+    await wait_fall_on_bit(dut, vec, bit_idx, timeout_cycles)
     t_f = cocotb.utils.get_sim_time(units="ns")
 
-    await with_timeout(RisingEdge(sig), max_wait_ns, 'ns')
+    await wait_rise_on_bit(dut, vec, bit_idx, timeout_cycles)
     t_r2 = cocotb.utils.get_sim_time(units="ns")
 
     return float(t_f - t_r1), float(t_r2 - t_r1)
@@ -221,10 +241,8 @@ async def test_pwm_freq(dut):
     # Configure pin0 to PWM with ~50% duty so it toggles
     await configure_pwm_pin0(dut, 0x80)
 
-    pwm_sig = dut.uo_out[0]
-
     # Measure period and compute frequency
-    period_ns = await measure_pwm_period_ns(pwm_sig)
+    period_ns = await measure_pwm_period_ns(dut, dut.uo_out, 0)
     frequency_hz = 1e9 / period_ns
 
     dut._log.info(f"Measured PWM frequency: {frequency_hz:.2f} Hz (period: {period_ns:.2f} ns)")
@@ -258,14 +276,14 @@ async def test_pwm_duty(dut):
 
     # Case C: 50% duty - Spec: ±1% 
     await spi_write(dut, 0x04, 0x80)
-    high_ns, period_ns = await measure_pwm_high_and_period_ns(pwm_sig)
+    high_ns, period_ns = await measure_pwm_high_and_period_ns(dut, dut.uo_out, 0)
     duty_cycle = (high_ns / period_ns) * 100.0
     dut._log.info(f"Measured PWM duty cycle: {duty_cycle:.2f}% (high: {high_ns:.2f} ns, period: {period_ns:.2f} ns)")
     assert 49.0 <= duty_cycle <= 51.0, f"PWM duty cycle {duty_cycle}% out of spec range for 0x80"
 
     # Case D: 25% duty - Spec: ±1%
     await spi_write(dut, 0x04, 0x40)
-    high_ns, period_ns = await measure_pwm_high_and_period_ns(pwm_sig)
+    high_ns, period_ns = await measure_pwm_high_and_period_ns(dut, dut.uo_out, 0)
     duty_cycle = (high_ns / period_ns) * 100.0
     dut._log.info(f"Measured PWM duty cycle: {duty_cycle:.2f}% (high: {high_ns:.2f} ns, period: {period_ns:.2f} ns)")
     assert 24.0 <= duty_cycle <= 26.0, f"PWM duty cycle {duty_cycle}% out of spec range for 0x40"
