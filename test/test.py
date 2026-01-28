@@ -3,8 +3,8 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import RisingEdge, FallingEdge
+from cocotb.triggers import ClockCycles, with_timeout
 from cocotb.types import Logic
 from cocotb.types import LogicArray
 
@@ -83,6 +83,69 @@ async def send_spi_transaction(dut, r_w, address, data):
     await ClockCycles(dut.clk, 600)
     return ui_in_logicarray(ncs, bit, sclk)
 
+async def spi_write(dut, addr, data):
+    await send_spi_transaction(dut, 1, addr, data)
+
+async def reset_dut(dut):
+    # 10 MHz clock
+    clock = Clock(dut.clk, 100, units="ns")
+    cocotb.start_soon(clock.start())
+
+    dut.ena.value = 1
+    dut.ui_in.value = ui_in_logicarray(1, 0, 0) # NCS high(idle), COPI low, SCLK low
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 5)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 5)
+
+async def configure_pwm_pin0(dut, duty):
+    """
+    Configure uo_out[0] to be PWM driven:
+      - en_reg_out_7_0 bit0 = 1  (addr 0x00, data 0x01)
+      - en_reg_pwm_7_0 bit0 = 1  (addr 0x02, data 0x01)
+      - pwm_duty_cycle = duty    (addr 0x04)
+    """
+    await spi_write(dut, 0x00, 0x01)   # enable output bit0
+    await spi_write(dut, 0x02, 0x01)   # enable PWM on bit0
+    await spi_write(dut, 0x04, duty)   # duty cycle
+
+async def measure_pwm_period_ns(sig, max_wait_ns=2_000_000):
+    """
+    Measure period as time between two rising edges.
+    Returns period in ns (float).
+    """
+    await with_timeout(RisingEdge(sig), max_wait_ns, 'ns')
+    t1 = cocotb.utils.get_sim_time(units="ns")
+    await with_timeout(RisingEdge(sig), max_wait_ns, 'ns')
+    t2 = cocotb.utils.get_sim_time(units="ns")
+    return float(t2 - t1)
+
+async def measure_pwm_high_and_period_ns(sig, max_wait_ns=2_000_000):
+    """
+    Measure high time and period:
+      rising -> falling = high
+      rising -> next rising = period
+    Returns (high_ns, period_ns).
+    """
+    await with_timeout(RisingEdge(sig), max_wait_ns, 'ns')
+    t_r1 = cocotb.utils.get_sim_time(units="ns")
+
+    await with_timeout(FallingEdge(sig), max_wait_ns, 'ns')
+    t_f = cocotb.utils.get_sim_time(units="ns")
+
+    await with_timeout(RisingEdge(sig), max_wait_ns, 'ns')
+    t_r2 = cocotb.utils.get_sim_time(units="ns")
+
+    return float(t_f - t_r1), float(t_r2 - t_r1)
+
+async def assert_stays_constant(sig, expected, cycles, dut):
+    """
+    Sample a signal for N clk cycles and ensure it never changes from expected.
+    """
+    for _ in range(cycles):
+        assert int(sig.value) == expected, f"Expected constant {expected}, got {sig.value}"
+        await ClockCycles(dut.clk, 1)
+
 @cocotb.test()
 async def test_spi(dut):
     dut._log.info("Start SPI test")
@@ -152,10 +215,59 @@ async def test_spi(dut):
 @cocotb.test()
 async def test_pwm_freq(dut):
     # Write your test here
+    dut._log.info("Start PWM Frequency test")
+    await reset_dut(dut)
+
+    # Configure pin0 to PWM with ~50% duty so it toggles
+    await configure_pwm_pin0(dut, 0x80)
+
+    pwm_sig = dut.uo_out[0]
+
+    # Measure period and compute frequency
+    period_ns = await measure_pwm_period_ns(pwm_sig)
+    frequency_hz = 1e9 / period_ns
+
+    dut._log.info(f"Measured PWM frequency: {frequency_hz:.2f} Hz (period: {period_ns:.2f} ns)")
+
+    # Spec: 3 kHz ± 1% => [2970 Hz, 3030 Hz]
+    assert 2970.0 <= frequency_hz <= 3030.0, f"PWM frequency {frequency_hz} Hz out of spec range"
+
     dut._log.info("PWM Frequency test completed successfully")
 
 
 @cocotb.test()
 async def test_pwm_duty(dut):
     # Write your test here
+    dut._log.info("Start PWM Duty Cycle test")
+    await reset_dut(dut)
+
+    pwm_sig = dut.uo_out[0]
+
+    # Enable output and PWM on pin0 once
+    await spi_write(dut, 0x00, 0x01)   # enable output bit0
+    await spi_write(dut, 0x02, 0x01)   # enable PWM on bit0
+
+    # Case A: 0% duty => always low
+    await spi_write(dut, 0x04, 0x00)   
+    # Don't wait for edges (won't toggle). Sample for a while.
+    await assert_stays_constant(pwm_sig, expected=0, cycles=5000, dut=dut)
+
+    # Case B: 100% duty => always high
+    await spi_write(dut, 0x04, 0xFF)
+    await assert_stays_constant(pwm_sig, expected=1, cycles=5000, dut=dut)
+
+    # Case C: 50% duty - Spec: ±1% 
+    await spi_write(dut, 0x04, 0x80)
+    high_ns, period_ns = await measure_pwm_high_and_period_ns(pwm_sig)
+    duty_cycle = (high_ns / period_ns) * 100.0
+    dut._log.info(f"Measured PWM duty cycle: {duty_cycle:.2f}% (high: {high_ns:.2f} ns, period: {period_ns:.2f} ns)")
+    assert 49.0 <= duty_cycle <= 51.0, f"PWM duty cycle {duty_cycle}% out of spec range for 0x80"
+
+    # Case D: 25% duty - Spec: ±1%
+    await spi_write(dut, 0x04, 0x40)
+    high_ns, period_ns = await measure_pwm_high_and_period_ns(pwm_sig)
+    duty_cycle = (high_ns / period_ns) * 100.0
+    dut._log.info(f"Measured PWM duty cycle: {duty_cycle:.2f}% (high: {high_ns:.2f} ns, period: {period_ns:.2f} ns)")
+    assert 24.0 <= duty_cycle <= 26.0, f"PWM duty cycle {duty_cycle}% out of spec range for 0x40"
+
     dut._log.info("PWM Duty Cycle test completed successfully")
