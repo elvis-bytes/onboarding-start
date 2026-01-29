@@ -93,7 +93,7 @@ always @(posedge clk or negedge rst_n) begin
             shift_reg <= {shift_reg[14:0], copi_sync2};
             bit_count <= bit_count + 5'd1;
 
-            if (bit_count == 5'd15) begin
+            if (bit_count == 5'd16) begin
                 got_16 <= 1'b1;
             end
         end
