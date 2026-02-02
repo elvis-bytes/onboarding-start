@@ -77,13 +77,13 @@ reg got_16;
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         shift_reg <= 16'h0000;
-        bit_count <= 6'd0;
+        bit_count <= 5'd0;
         got_16    <= 1'b0;
     end else begin
         // Start of transaction: clear capture state
         if (ncs_fall) begin
             shift_reg <= 16'h0000;
-            bit_count <= 6'd0;
+            bit_count <= 5'd0;
             got_16    <= 1'b0;
         end
 
@@ -91,9 +91,9 @@ always @(posedge clk or negedge rst_n) begin
         if (active && sclk_rise && !got_16) begin    
             // First received bit ends up in MSB
             shift_reg <= {shift_reg[14:0], copi_sync2};
-            bit_count <= bit_count + 6'd1;
+            bit_count <= bit_count + 5'd1;
 
-            if (bit_count == 6'd16) begin
+            if (bit_count == 5'd15) begin
                 got_16 <= 1'b1;
             end
         end
